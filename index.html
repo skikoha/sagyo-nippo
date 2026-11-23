@@ -339,7 +339,7 @@ code.url{display:block;font-family:var(--font-num);font-size:17px;font-weight:60
       <div class="card">
         <div class="monthnav"><button class="btn small" id="m-prev" aria-label="前の月">← 前月</button><h2 id="m-title"></h2><button class="btn small" id="m-next" aria-label="次の月">翌月 →</button></div>
         <div class="cal" id="m-cal"></div>
-        <p class="legend"><i></i>黒＝日報あり（押すと内容を表示）。点線の枠が今日です。</p>
+        <p class="legend"><i></i>黒＝日報あり（押すと内容を表示。日報のない日も押すと入力できます）。点線の枠が今日です。</p>
       </div>
       <div class="card" id="m-detail"></div>
       <div class="card"><h2>この月の日報 <span class="muted small" id="month-count"></span></h2><div class="list" id="m-list"></div></div>
@@ -516,8 +516,11 @@ document.addEventListener('click', e => {
   const a = e.target.closest('[data-act]'); if (!a) return;
   const act = a.dataset.act;
   if (act === 'home') show('today');
-  if (act === 'voice') startVoice(todayStr());
-  if (act === 'manual') openForm(todayStr());
+  let date = todayStr();
+  if (a.dataset.date) date = a.dataset.date;
+  if (a.dataset.pick) { const v = $(a.dataset.pick).value; if (!v) { toast('日付を選んでください'); return; } if (v > todayStr()) { toast('先の日付は選べません'); return; } date = v; }
+  if (act === 'voice') startVoice(date);
+  if (act === 'manual') openForm(date);
   if (act === 'choose') openChoose();
 });
 
@@ -583,6 +586,9 @@ async function renderToday(){
   if (recent.length) {
     h += `<div class="card"><h2>最近の日報</h2><div class="list">` + recent.map(r => `<button data-goto="${r.work_date}"><span class="d">${jpDate(r.work_date)}</span><span class="t">${esc(r.site_name || '現場名なし')}<br><span class="muted small">${esc(r.work_description || '')}</span></span></button>`).join('') + `</div></div>`;
   }
+  h += `<div class="card"><h2>前の日の日報を入れる</h2><p class="muted small" style="margin:0">入れ忘れた日を選んでください。月間のカレンダーで日付を押しても入れられます。</p>
+    <div class="field" style="margin-top:10px"><label for="past-date">日付</label><input type="date" id="past-date" max="${addDays(date, -1)}" value="${addDays(date, -1)}"></div>
+    <div class="grid2"><button class="btn mic" data-act="voice" data-pick="#past-date">音声で入力</button><button class="btn primary" data-act="manual" data-pick="#past-date">手動で入力</button></div></div>`;
   if (lsGet('notif-hidden') !== '1') h += `<div class="card stack">${notifHTML()}<button class="btn small ghost" id="notif-hide">設定済みなので隠す</button></div>`;
   body.innerHTML = h;
   const nh = $('#notif-hide'); if (nh) nh.onclick = () => { lsSet('notif-hidden','1'); renderToday(); };
@@ -600,6 +606,7 @@ async function openChoose(){
 
 /* ================= 音声対話 ================= */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const qText = st => (D && D.work_date !== todayStr()) ? st.q.replace(/^今日の/, 'この日の') : st.q;
 const STEPS = [
   {key:'weather_text', short:'天気', q:'今日の天気を教えてください。'},
   {key:'site_name', short:'現場名', q:'今日の現場名は？'},
@@ -672,7 +679,7 @@ async function ask(idx, prefix = ''){
   renderVoice();
   showHeard('', false);
   const st = STEPS[idx];
-  const q = st.key === 'confirm' ? confirmSpeech() : st.q;
+  const q = st.key === 'confirm' ? confirmSpeech() : qText(st);
   await speak((prefix ? prefix + ' ' : '') + q);
   if (g === V.gen) startListening();
 }
@@ -778,16 +785,17 @@ async function startVoice(date){
   for (const k of FIELDS) if (D[k]) V.answered.add(k);
   $('#voice-date').textContent = jpDate(date);
   show('voice');
-  ask(0, jpDateSpeech(date) + (D.existing ? '保存済みの日報を入力し直します。' : '作業日報を始めます。'));
+  ask(0, (date === todayStr() ? jpDateSpeech(date) : jpDateSpeech(date).replace(/です。$/, 'の日報です。')) + (D.existing ? '保存済みの日報を入力し直します。' : '作業日報を始めます。'));
 }
-function exitVoice(){ stopAll(); show('today'); }
+function showFor(date){ if (date === todayStr()) show('today'); else { monthCursor = date.slice(0,7); selDate = date; show('month'); } }
+function exitVoice(){ stopAll(); showFor(D ? D.work_date : todayStr()); }
 async function doVoiceSave(){
   stopAll();
   try { await saveReport(D); } catch(e) { say('保存できませんでした。もう一度「保存して」と言ってください。'); return; }
-  D = null;
+  const date = D.work_date; D = null;
   speak('保存しました。');
   toast('保存しました');
-  show('today');
+  showFor(date);
 }
 
 /* ---- 音声画面の描画 ---- */
@@ -809,7 +817,7 @@ function renderVoice(){
   if (!SR) banner = '<div class="banner"><strong>この端末では音声認識が使えません。</strong>質問の読み上げに文字で答えるか、手動入力に切り替えてください。</div>';
   else if (V.broken) banner = '<div class="banner"><strong>マイクが使えません。</strong>iPhoneの「設定」→「Safari」→「マイク」で許可するか、手動入力に切り替えてください。ここまでの内容は引き継がれます。</div>';
   $('#voice-banner').innerHTML = banner;
-  $('#voice-q').textContent = st.key === 'confirm' ? '保存しますか？' : st.q;
+  $('#voice-q').textContent = st.key === 'confirm' ? '保存しますか？' : qText(st);
   $('#voice-skip').hidden = st.key === 'confirm';
   $('#voice-mic').hidden = !SR || !!V.broken;
 
@@ -903,9 +911,9 @@ $('#form').addEventListener('submit', async e => {
   if (INHERIT_RE.test(D.site_name)) { await formInherit(); return; }
   try { await saveReport(D); } catch(err) { toast('保存できませんでした。もう一度お試しください'); return; }
   const date = D.work_date; D = null; toast('保存しました');
-  if (date === todayStr()) show('today'); else { monthCursor = date.slice(0,7); selDate = date; show('month'); }
+  showFor(date);
 });
-$('#form-exit').addEventListener('click', () => { readForm(); show(currentTab === 'month' ? 'month' : 'today'); });
+$('#form-exit').addEventListener('click', () => { readForm(); showFor(D ? D.work_date : todayStr()); });
 
 /* ================= 月間 ================= */
 let monthCursor = todayStr().slice(0,7), selDate = todayStr();
@@ -929,7 +937,12 @@ async function renderMonth(){
 async function renderDetail(r){
   const box = $('#m-detail');
   if (!selDate.startsWith(monthCursor)) { box.innerHTML = '<p class="muted small" style="margin:0">日付を選ぶと日報を表示します。</p>'; return; }
-  if (!r) { box.innerHTML = `<h2>${jpDateLong(selDate)}</h2><p class="muted small" style="margin:0">この日の日報はありません。</p>`; return; }
+  if (!r) {
+    const can = selDate <= todayStr();
+    box.innerHTML = `<h2>${jpDateLong(selDate)}</h2><p class="muted small" style="margin:0">${can ? 'この日の日報はまだありません。ここから入れられます。' : '先の日付の日報はまだ入れられません。'}</p>` +
+      (can ? `<div class="grid2" style="margin-top:12px"><button class="btn mic" data-act="voice" data-date="${selDate}">音声で入力</button><button class="btn primary" data-act="manual" data-date="${selDate}">手動で入力</button></div>` : '');
+    return;
+  }
   box.innerHTML = `<h2>${jpDateLong(selDate)}</h2>${reportFieldsHTML(r)}${await photosHTML(r.photos)}<div class="row" style="margin-top:14px"><button class="btn primary" id="m-edit">修正する</button></div>`;
   $('#m-edit').onclick = () => openForm(selDate);
 }
